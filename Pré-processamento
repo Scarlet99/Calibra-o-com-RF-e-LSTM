@@ -1,7 +1,6 @@
 # ============================================================
 # PRÉ-PROCESSAMENTO PARA CALIBRAÇÃO COM RF E LSTM
 # Prophet + remoção de gaps + corte do período válido do IAG
-# Mantém base completa e gera bases por gás
 # ============================================================
 
 import pandas as pd
@@ -9,7 +8,7 @@ import numpy as np
 from prophet import Prophet
 import warnings
 
-warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignorar")
 
 # ============================================================
 # 1) CAMINHO DO ARQUIVO
