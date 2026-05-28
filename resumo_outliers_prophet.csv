@@ -1,0 +1,14 @@
+coluna,pontos_validos,outliers_removidos,status
+iag_no2,14124,171,processada
+iag_co,14124,248,processada
+iag_o3,14124,308,processada
+iag_so2,14124,285,processada
+e2sp_no2_we,7744,28,processada
+e2sp_no2_ae,7772,23,processada
+e2sp_co_we,7707,106,processada
+e2sp_co_ae,7706,50,processada
+e2sp_ox_we,7721,100,processada
+e2sp_ox_ae,7753,77,processada
+e2sp_so2_we,7740,164,processada
+e2sp_so2_ae,7728,83,processada
+e2sp_temp,7850,299,processada
