@@ -1,7 +1,5 @@
 # Dicionário de Dados
 
-# Dicionário de Dados
-
 | Variável | Descrição |
 |---|---|
 | `time` | Data e hora do registro, utilizada para organizar temporalmente as medições da base. |
