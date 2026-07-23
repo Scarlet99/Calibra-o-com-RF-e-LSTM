@@ -1,41 +1,33 @@
 # Dicionário de Dados
 
+# Dicionário de Dados
+
 | Variável | Descrição |
-|-----------|-----------|
-| time | Data e hora da medição. |
-| e2sp_co | Estimativa da concentração de monóxido de carbono calculada pela Equação 1 da Alphasense. |
-| e2sp_co_2 | Estimativa da concentração de monóxido de carbono calculada pela Equação 2 da Alphasense. |
-| e2sp_co_3 | Estimativa da concentração de monóxido de carbono calculada pela Equação 3 da Alphasense. |
-| e2sp_co_4 | Estimativa da concentração de monóxido de carbono calculada pela Equação 4 da Alphasense. |
-| e2sp_co_ae | Sinal do eletrodo auxiliar (Auxiliary Electrode) do sensor de monóxido de carbono. |
-| e2sp_co_we | Sinal do eletrodo de trabalho (Working Electrode) do sensor de monóxido de carbono. |
-| e2sp_no2 | Estimativa da concentração de dióxido de nitrogênio calculada pela Equação 1 da Alphasense. |
-| e2sp_no2_2 | Estimativa da concentração de dióxido de nitrogênio calculada pela Equação 2 da Alphasense. |
-| e2sp_no2_3 | Estimativa da concentração de dióxido de nitrogênio calculada pela Equação 3 da Alphasense. |
-| e2sp_no2_4 | Estimativa da concentração de dióxido de nitrogênio calculada pela Equação 4 da Alphasense. |
-| e2sp_no2_ae | Sinal do eletrodo auxiliar (Auxiliary Electrode) do sensor de dióxido de nitrogênio. |
-| e2sp_no2_we | Sinal do eletrodo de trabalho (Working Electrode) do sensor de dióxido de nitrogênio. |
-| e2sp_ox | Estimativa da concentração de ozônio calculada pela Equação 1 da Alphasense. |
-| e2sp_ox_2 | Estimativa da concentração de ozônio calculada pela Equação 2 da Alphasense. |
-| e2sp_ox_3 | Estimativa da concentração de ozônio calculada pela Equação 3 da Alphasense. |
-| e2sp_ox_4 | Estimativa da concentração de ozônio calculada pela Equação 4 da Alphasense. |
-| e2sp_ox_ae | Sinal do eletrodo auxiliar (Auxiliary Electrode) do sensor oxidante OX-B431. |
-| e2sp_ox_we | Sinal do eletrodo de trabalho (Working Electrode) do sensor oxidante OX-B431. |
-| e2sp_so2 | Estimativa da concentração de dióxido de enxofre calculada pela Equação 1 da Alphasense. |
-| e2sp_so2_2 | Estimativa da concentração de dióxido de enxofre calculada pela Equação 2 da Alphasense. |
-| e2sp_so2_3 | Estimativa da concentração de dióxido de enxofre calculada pela Equação 3 da Alphasense. |
-| e2sp_so2_4 | Estimativa da concentração de dióxido de enxofre calculada pela Equação 4 da Alphasense. |
-| e2sp_so2_ae | Sinal do eletrodo auxiliar (Auxiliary Electrode) do sensor de dióxido de enxofre. |
-| e2sp_so2_we | Sinal do eletrodo de trabalho (Working Electrode) do sensor de dióxido de enxofre. |
-| e2sp_temp | Temperatura medida pelo módulo Envcity. |
-| iag_ambienttemp | Temperatura ambiente registrada pela estação de referência IAG. |
-| iag_co | Concentração de monóxido de carbono registrada pela estação de referência IAG. |
-| iag_internaltemp | Temperatura interna do equipamento da estação de referência IAG. |
-| iag_no | Concentração de monóxido de nitrogênio registrada pela estação de referência IAG. |
-| iag_no2 | Concentração de dióxido de nitrogênio registrada pela estação de referência IAG. |
-| iag_nox | Concentração de óxidos de nitrogênio (NOx) registrada pela estação de referência IAG. |
-| iag_o3 | Concentração de ozônio registrada pela estação de referência IAG. |
-| iag_so2 | Concentração de dióxido de enxofre registrada pela estação de referência IAG. |
-| pin_umid | Umidade relativa do ar registrada na estação meteorológica de Pinheiros. |
-| pin_temp | Temperatura do ar registrada na estação meteorológica de Pinheiros. |
-| pin_umid.1 | Coluna duplicada da variável de umidade relativa do ar da estação meteorológica de Pinheiros. |
+|---|---|
+| `time` | Data e hora do registro, utilizada para organizar temporalmente as medições da base. |
+| `e2sp_co` | Valor original registrado pelo sensor de baixo custo para monóxido de carbono (CO). |
+| `e2sp_no2` | Valor original registrado pelo sensor de baixo custo para dióxido de nitrogênio (NO₂). |
+| `e2sp_ox` | Valor original registrado pelo sensor de baixo custo OX, associado principalmente à resposta ao ozônio (O₃). |
+| `e2sp_so2` | Valor original registrado pelo sensor de baixo custo para dióxido de enxofre (SO₂). |
+| `e2sp_co_we` | Sinal do eletrodo de trabalho (*Working Electrode*) do sensor de CO. |
+| `e2sp_co_ae` | Sinal do eletrodo auxiliar (*Auxiliary Electrode*) do sensor de CO. |
+| `e2sp_no2_we` | Sinal do eletrodo de trabalho (*Working Electrode*) do sensor de NO₂. |
+| `e2sp_no2_ae` | Sinal do eletrodo auxiliar (*Auxiliary Electrode*) do sensor de NO₂. |
+| `e2sp_ox_we` | Sinal do eletrodo de trabalho (*Working Electrode*) do sensor OX, utilizado na análise de O₃ e como variável auxiliar para NO₂. |
+| `e2sp_ox_ae` | Sinal do eletrodo auxiliar (*Auxiliary Electrode*) do sensor OX. |
+| `e2sp_so2_we` | Sinal do eletrodo de trabalho (*Working Electrode*) do sensor de SO₂. |
+| `e2sp_so2_ae` | Sinal do eletrodo auxiliar (*Auxiliary Electrode*) do sensor de SO₂. |
+| `ctesb_temp` | Temperatura do ar obtida a partir da base horária da CETESB e integrada à base principal. |
+| `pin_umid` | Umidade relativa do ar associada à estação meteorológica de Pinheiros. |
+| `co_ppb_alphasense` | Concentração estimada de CO em ppb, calculada a partir das equações da Alphasense. |
+| `no2_ppb_alphasense` | Concentração estimada de NO₂ em ppb, calculada a partir das equações da Alphasense. |
+| `o3_ppb_alphasense` | Concentração estimada de O₃ em ppb, calculada a partir da resposta do sensor OX e das equações da Alphasense. |
+| `so2_ppb_alphasense` | Concentração estimada de SO₂ em ppb, calculada a partir das equações da Alphasense. |
+| `iag_co_ppb` | Concentração de referência de CO medida pela estação IAG, convertida para ppb. |
+| `iag_no2` | Concentração de referência de NO₂ medida pela estação IAG. |
+| `iag_o3` | Concentração de referência de O₃ medida pela estação IAG. |
+| `iag_so2` | Concentração de referência de SO₂ medida pela estação IAG. |
+| `co_merge_sem_alterar` | Coluna final mergeada para CO, mantendo os valores disponíveis sem alteração, utilizada como entrada principal nos modelos de calibração. |
+| `no2_merge_sem_alterar` | Coluna final mergeada para NO₂, mantendo os valores disponíveis sem alteração, utilizada como entrada principal nos modelos de calibração. |
+| `o3_merge_sem_alterar` | Coluna final mergeada para O₃, mantendo os valores disponíveis sem alteração, utilizada como entrada principal nos modelos de calibração. |
+| `so2_merge_sem_alterar` | Coluna final mergeada para SO₂, mantendo os valores disponíveis sem alteração, utilizada como entrada principal nos modelos de calibração. |
