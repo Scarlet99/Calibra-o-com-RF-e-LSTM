@@ -1,364 +1,772 @@
 # ============================================================
-# RANDOM FOREST - CALIBRAÇÃO O3
-# DIVISÃO ALEATÓRIA 60/20/20
-# BASE: base_5min_preprocessada_final.csv
+# RANDOM FOREST — CALIBRAÇÃO DE UM GÁS POR VEZ
+#
+# Usa colunas merge_sem_alterar:
+# CO  -> co_merge_sem_alterar
+# NO2 -> no2_merge_sem_alterar
+# O3  -> o3_merge_sem_alterar
+# SO2 -> so2_merge_sem_alterar
+#
+# Split aleatório:
+# 60% treino
+# 20% validação
+# 20% teste
+#
+# Gráfico:
+# - mostra todo o período válido usado;
+# - linha contínua;
+# - picos visíveis;
+# - sem pontos;
+# - interpolação apenas visual.
 # ============================================================
 
-import pandas as pd
+import warnings
+warnings.filterwarnings("ignore")
+
+from pathlib import Path
+
+import joblib
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
+import matplotlib.dates as mdates
+
+from scipy.stats import pearsonr
 
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split, GridSearchCV, RepeatedKFold
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 
-# ============================================================
-# 1) CONFIGURAÇÕES
-# ============================================================
-
-arquivo = "base_5min_preprocessada_final.csv"
-
-target = "iag_o3"
-
-features = [
-    "e2sp_ox",
-    "e2sp_ox_we",
-    "e2sp_ox_ae",
-    "pin_temp",
-    "pin_umid"
-]
 
 # ============================================================
-# 2) LEITURA DA BASE
+# 1. CONFIGURAÇÕES
 # ============================================================
 
-df = pd.read_csv(arquivo, low_memory=False)
+ARQUIVO = Path("/content/base_merge_todos_gases_US.csv")
 
-df["time"] = pd.to_datetime(df["time"], errors="coerce")
-df = df.dropna(subset=["time"])
-df = df.sort_values("time")
+# Escolha apenas um gás por vez:
+# opções: "co", "no2", "o3", "so2"
+GAS_ESCOLHIDO = "o3"
 
-print("=" * 60)
-print("BASE ORIGINAL")
-print("=" * 60)
-print("Shape:", df.shape)
-print("Período:", df["time"].min(), "até", df["time"].max())
+RANDOM_STATE = 42
 
+FREQUENCIA_GRAFICO = "5min"
+
+INTERPOLAR_PEQUENOS_GAPS = 6
 # ============================================================
-# 3) VERIFICAÇÃO DAS COLUNAS
-# ============================================================
-
-colunas_necessarias = ["time"] + features + [target]
-
-colunas_faltando = [
-    col for col in colunas_necessarias if col not in df.columns
-]
-
-if len(colunas_faltando) > 0:
-    print("\nERRO: As seguintes colunas não existem na base:")
-    print(colunas_faltando)
-    print("\nColunas disponíveis:")
-    print(df.columns.tolist())
-    raise SystemExit
-
-# ============================================================
-# 4) SELEÇÃO E LIMPEZA DOS DADOS
+# 2. CONFIGURAÇÃO DOS GASES
 # ============================================================
 
-base = df[colunas_necessarias].copy()
+CONFIG_GASES = {
+    "co": {
+        "nome": "CO",
+        "target_opcoes": ["iag_co_ppb", "iag_co"],
+        "features": [
+            "co_merge_sem_alterar",
+            "e2sp_co_we",
+            "e2sp_co_ae",
+            "ctesb_temp",
+            "pin_umid"
+        ]
+    },
 
-for col in features + [target]:
-    base[col] = pd.to_numeric(base[col], errors="coerce")
+    "no2": {
+        "nome": "NO2",
+        "target_opcoes": ["iag_no2"],
+        "features": [
+            "no2_merge_sem_alterar",
+            "e2sp_no2_we",
+            "e2sp_no2_ae",
+            "e2sp_ox_we",
+            "ctesb_temp",
+            "pin_umid"
+        ]
+    },
 
-base = base.replace([np.inf, -np.inf], np.nan)
-base = base.dropna(subset=features + [target])
+    "o3": {
+        "nome": "O3",
+        "target_opcoes": ["iag_o3"],
+        "features": [
+            "o3_merge_sem_alterar",
+            "e2sp_ox_we",
+            "e2sp_ox_ae",
+            "ctesb_temp",
+            "pin_umid"
+        ]
+    },
 
-base = base.sort_values("time").reset_index(drop=True)
-
-print("\n" + "=" * 60)
-print("BASE APÓS LIMPEZA")
-print("=" * 60)
-print("Shape:", base.shape)
-print("Features usadas:", features)
-print("Target:", target)
-
-# ============================================================
-# 5) MATRIZES X E Y
-# ============================================================
-
-X = base[features]
-y = base[target]
-
-# ============================================================
-# 6) SPLIT ALEATÓRIO 60/20/20
-# ============================================================
-
-X_train, X_temp, y_train, y_temp = train_test_split(
-    X,
-    y,
-    train_size=0.60,
-    random_state=42,
-    shuffle=True
-)
-
-X_valid, X_test, y_valid, y_test = train_test_split(
-    X_temp,
-    y_temp,
-    test_size=0.50,
-    random_state=42,
-    shuffle=True
-)
-
-print("\n" + "=" * 60)
-print("DIVISÃO DOS DADOS")
-print("=" * 60)
-print("Treino:", X_train.shape)
-print("Validação:", X_valid.shape)
-print("Teste:", X_test.shape)
-
-# ============================================================
-# 7) RANDOM FOREST + GRID SEARCH
-# ============================================================
-
-modelo = RandomForestRegressor(
-    random_state=42,
-    n_jobs=-1
-)
-
-param_grid = {
-    "n_estimators": [100, 300, 500],
-    "max_depth": [10, 20, None],
-    "min_samples_split": [2, 5],
-    "min_samples_leaf": [1, 2],
-    "max_features": ["sqrt"]
+    "so2": {
+        "nome": "SO2",
+        "target_opcoes": ["iag_so2"],
+        "features": [
+            "so2_merge_sem_alterar",
+            "e2sp_so2_we",
+            "e2sp_so2_ae",
+            "ctesb_temp",
+            "pin_umid"
+        ]
+    }
 }
 
-kfold = RepeatedKFold(
-    n_splits=5,
-    n_repeats=1,
-    random_state=42
-)
-
-gs = GridSearchCV(
-    estimator=modelo,
-    param_grid=param_grid,
-    cv=kfold,
-    scoring="r2",
-    n_jobs=-1,
-    verbose=2,
-    return_train_score=True
-)
-
-print("\nTreinando modelo Random Forest para O3...")
-gs.fit(X_train, y_train)
-
-print("\nMelhores parâmetros:")
-print(gs.best_params_)
-
-print("\nMelhor R² médio no CV:")
-print(gs.best_score_)
 
 # ============================================================
-# 8) PREVISÕES
+# 3. LOCALIZAR ARQUIVO
 # ============================================================
 
-pred_train = gs.predict(X_train)
-pred_valid = gs.predict(X_valid)
-pred_test = gs.predict(X_test)
+if not ARQUIVO.exists():
+
+    alternativas = [
+        Path("base_merge_todos_gases_US.csv"),
+        Path("/content/base_merge_todos_gases_sem_alterar.csv"),
+        Path("base_merge_todos_gases_sem_alterar.csv")
+    ]
+
+    encontrado = False
+
+    for arquivo_alt in alternativas:
+        if arquivo_alt.exists():
+            ARQUIVO = arquivo_alt
+            encontrado = True
+            break
+
+    if not encontrado:
+        raise FileNotFoundError(
+            "O arquivo não foi encontrado.\n\n"
+            "Envie para o Colab um destes arquivos:\n"
+            "- base_merge_todos_gases_US.csv\n"
+            "- base_merge_todos_gases_sem_alterar.csv"
+        )
+
 
 # ============================================================
-# 9) FUNÇÃO DE MÉTRICAS
+# 4. FUNÇÕES AUXILIARES
 # ============================================================
+
+def ler_base_csv(arquivo):
+    """
+    Lê CSV separado por vírgula ou ponto e vírgula.
+    """
+
+    try:
+        df_temp = pd.read_csv(
+            arquivo,
+            sep=",",
+            decimal=".",
+            encoding="utf-8-sig",
+            low_memory=False
+        )
+
+        if df_temp.shape[1] > 1:
+            print("Separador identificado: vírgula ','")
+            return df_temp
+
+    except Exception:
+        pass
+
+    try:
+        df_temp = pd.read_csv(
+            arquivo,
+            sep=";",
+            decimal=".",
+            encoding="utf-8-sig",
+            low_memory=False
+        )
+
+        if df_temp.shape[1] > 1:
+            print("Separador identificado: ponto e vírgula ';'")
+            return df_temp
+
+    except Exception:
+        pass
+
+    df_temp = pd.read_csv(
+        arquivo,
+        sep=None,
+        engine="python",
+        decimal=".",
+        encoding="utf-8-sig"
+    )
+
+    print("Separador identificado automaticamente.")
+    return df_temp
+
+
+def converter_numero(valor):
+    """
+    Converte texto para número.
+    Não altera escala, não multiplica e não divide.
+    """
+
+    if pd.isna(valor):
+        return np.nan
+
+    s = str(valor).strip()
+
+    if s == "" or s.lower() in ["nan", "none", "null"]:
+        return np.nan
+
+    s = s.replace(" ", "")
+
+    # Formato brasileiro: 1.234,56
+    if "," in s and "." in s:
+
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "")
+            s = s.replace(",", ".")
+
+        # Formato americano: 1,234.56
+        else:
+            s = s.replace(",", "")
+
+    # Apenas vírgula decimal
+    elif "," in s:
+        s = s.replace(",", ".")
+
+    # Caso com vários pontos
+    if s.count(".") > 1:
+        partes = s.split(".")
+        s = partes[0] + "." + "".join(partes[1:])
+
+    return pd.to_numeric(s, errors="coerce")
+
+
+def escolher_target(df, opcoes):
+    """
+    Escolhe automaticamente a coluna de referência existente.
+    """
+
+    for col in opcoes:
+        if col in df.columns:
+            return col
+
+    raise KeyError(
+        "Nenhuma coluna de referência foi encontrada.\n"
+        f"Opções esperadas: {opcoes}\n\n"
+        f"Colunas disponíveis:\n{df.columns.tolist()}"
+    )
+
 
 def calcular_metricas(y_real, y_pred):
-    rmse = np.sqrt(mean_squared_error(y_real, y_pred))
+    """
+    Calcula RMSE, MAE, R2 e Pearson.
+    """
+
+    y_real = np.asarray(y_real, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+
     mse = mean_squared_error(y_real, y_pred)
+    rmse = np.sqrt(mse)
     mae = mean_absolute_error(y_real, y_pred)
     r2 = r2_score(y_real, y_pred)
 
-    if len(y_real) > 1:
-        pearson = np.corrcoef(y_real, y_pred)[0, 1]
+    if len(y_real) > 1 and np.std(y_real) > 0 and np.std(y_pred) > 0:
+        pearson = pearsonr(y_real, y_pred)[0]
     else:
         pearson = np.nan
 
-    return rmse, mse, mae, r2, pearson
-
-# ============================================================
-# 10) RESULTADOS
-# ============================================================
-
-resultados = []
-
-for fase, y_real, y_pred in [
-    ("Treino", y_train, pred_train),
-    ("Validação", y_valid, pred_valid),
-    ("Teste", y_test, pred_test)
-]:
-    rmse, mse, mae, r2, pearson = calcular_metricas(y_real, y_pred)
-
-    resultados.append({
-        "Gas": "O3",
-        "Fase": fase,
+    return {
+        "N": len(y_real),
         "RMSE": rmse,
-        "MSE": mse,
         "MAE": mae,
         "R2": r2,
-        "Pearson": pearson,
-        "N": len(y_real)
-    })
+        "Pearson": pearson
+    }
 
-resultado_final = pd.DataFrame(resultados)
 
-print("\n" + "=" * 60)
-print("RESULTADOS FINAIS")
-print("=" * 60)
-print(resultado_final)
+# ============================================================
+# 5. CARREGAR BASE
+# ============================================================
 
-resultado_final.to_csv(
-    "resultados_rf_o3_base_5min.csv",
-    index=False
+print("=" * 75)
+print("RANDOM FOREST — CALIBRAÇÃO DE UM GÁS POR VEZ")
+print("=" * 75)
+
+print("\nArquivo utilizado:")
+print(ARQUIVO.resolve())
+
+df = ler_base_csv(ARQUIVO)
+
+df.columns = (
+    df.columns
+    .astype(str)
+    .str.replace("\ufeff", "", regex=False)
+    .str.strip()
+    .str.lower()
+)
+
+if "time" not in df.columns:
+    raise KeyError(
+        "A coluna 'time' não foi encontrada.\n\n"
+        f"Colunas disponíveis:\n{df.columns.tolist()}"
+    )
+
+df["time"] = pd.to_datetime(
+    df["time"],
+    errors="coerce"
+)
+
+datas_invalidas = int(df["time"].isna().sum())
+
+df = df.dropna(subset=["time"])
+
+duplicados = int(df["time"].duplicated().sum())
+
+df = (
+    df
+    .sort_values("time")
+    .drop_duplicates(subset=["time"], keep="first")
+    .reset_index(drop=True)
+)
+
+print("\nDatas inválidas:", datas_invalidas)
+print("Horários duplicados:", duplicados)
+print("Dimensão da base:", df.shape)
+print("Período da base:", df["time"].min(), "até", df["time"].max())
+
+
+# ============================================================
+# 6. PREPARAR BASE DO GÁS ESCOLHIDO
+# ============================================================
+
+if GAS_ESCOLHIDO not in CONFIG_GASES:
+    raise ValueError(
+        f"Gás inválido: {GAS_ESCOLHIDO}. "
+        f"Use uma destas opções: {list(CONFIG_GASES.keys())}"
+    )
+
+config = CONFIG_GASES[GAS_ESCOLHIDO]
+
+NOME_GAS = config["nome"]
+FEATURES = config["features"]
+TARGET = escolher_target(df, config["target_opcoes"])
+
+colunas_necessarias = ["time"] + FEATURES + [TARGET]
+
+colunas_faltando = [
+    col for col in colunas_necessarias
+    if col not in df.columns
+]
+
+if colunas_faltando:
+    raise KeyError(
+        f"Colunas faltando para {NOME_GAS}:\n"
+        f"{colunas_faltando}\n\n"
+        f"Colunas disponíveis:\n{df.columns.tolist()}"
+    )
+
+base = df[colunas_necessarias].copy()
+
+# Converter entradas e alvo para número
+for coluna in FEATURES + [TARGET]:
+    base[coluna] = base[coluna].apply(converter_numero)
+
+# Remover infinitos
+base = base.replace([np.inf, -np.inf], np.nan)
+
+# Remover valores negativos no alvo de referência
+negativos_target = int((base[TARGET] < 0).sum())
+
+base.loc[
+    base[TARGET] < 0,
+    TARGET
+] = np.nan
+
+# Remover valores <= 0 na coluna mergeada principal
+coluna_merge = FEATURES[0]
+
+invalidos_merge = int((base[coluna_merge] <= 0).sum())
+
+base.loc[
+    base[coluna_merge] <= 0,
+    coluna_merge
+] = np.nan
+
+linhas_antes = len(base)
+
+base = (
+    base
+    .dropna(subset=FEATURES + [TARGET])
+    .sort_values("time")
+    .reset_index(drop=True)
+)
+
+linhas_depois = len(base)
+
+print("\n" + "=" * 75)
+print(f"BASE UTILIZADA — {NOME_GAS}")
+print("=" * 75)
+
+print("Target usado:", TARGET)
+print("Coluna mergeada usada:", coluna_merge)
+
+print("\nValores negativos no alvo removidos:", negativos_target)
+print("Valores <= 0 na coluna mergeada removidos:", invalidos_merge)
+
+print("\nLinhas antes:", linhas_antes)
+print("Linhas utilizadas:", linhas_depois)
+print("Linhas removidas:", linhas_antes - linhas_depois)
+
+print(
+    "Período válido usado:",
+    base["time"].min(),
+    "até",
+    base["time"].max()
+)
+
+print("\nVariáveis de entrada:")
+for feature in FEATURES:
+    print("-", feature)
+
+print("\nVariável de saída:")
+print("-", TARGET)
+
+if len(base) < 100:
+    raise ValueError(
+        f"A base possui menos de 100 linhas válidas para {NOME_GAS}."
+    )
+
+
+# ============================================================
+# 7. SPLIT ALEATÓRIO 60/20/20
+# ============================================================
+
+treino, temporaria = train_test_split(
+    base,
+    test_size=0.40,
+    random_state=RANDOM_STATE,
+    shuffle=True
+)
+
+validacao, teste = train_test_split(
+    temporaria,
+    test_size=0.50,
+    random_state=RANDOM_STATE,
+    shuffle=True
+)
+
+treino = treino.reset_index(drop=True)
+validacao = validacao.reset_index(drop=True)
+teste = teste.reset_index(drop=True)
+
+X_train = treino[FEATURES]
+y_train = treino[TARGET]
+
+X_valid = validacao[FEATURES]
+y_valid = validacao[TARGET]
+
+X_test = teste[FEATURES]
+y_test = teste[TARGET]
+
+print("\n" + "=" * 75)
+print(f"DIVISÃO ALEATÓRIA 60/20/20 — {NOME_GAS}")
+print("=" * 75)
+
+print("Treino:", len(treino), f"({len(treino) / len(base) * 100:.2f}%)")
+print("Validação:", len(validacao), f"({len(validacao) / len(base) * 100:.2f}%)")
+print("Teste:", len(teste), f"({len(teste) / len(base) * 100:.2f}%)")
+
+print(
+    "\nO split foi aleatório, com shuffle=True e random_state =",
+    RANDOM_STATE
+)
+
+
+# ============================================================
+# 8. TREINAR RANDOM FOREST SIMPLES
+# ============================================================
+
+modelo_treino = RandomForestRegressor(
+    n_estimators=200,
+    max_depth=32,
+    min_samples_split=2,
+    min_samples_leaf=1,
+    max_features="sqrt",
+    bootstrap=True,
+    random_state=RANDOM_STATE,
+    n_jobs=-1
+)
+
+print("\n" + "=" * 75)
+print(f"TREINAMENTO DO RANDOM FOREST — {NOME_GAS}")
+print("=" * 75)
+
+modelo_treino.fit(X_train, y_train)
+
+pred_train = modelo_treino.predict(X_train)
+pred_valid = modelo_treino.predict(X_valid)
+
+
+# ============================================================
+# 9. TREINAR MODELO FINAL COM TREINO + VALIDAÇÃO
+# ============================================================
+
+X_final = pd.concat(
+    [X_train, X_valid],
+    axis=0,
+    ignore_index=True
+)
+
+y_final = pd.concat(
+    [y_train, y_valid],
+    axis=0,
+    ignore_index=True
+)
+
+modelo_final = RandomForestRegressor(
+    n_estimators=200,
+    max_depth=32,
+    min_samples_split=2,
+    min_samples_leaf=1,
+    max_features="sqrt",
+    bootstrap=True,
+    random_state=RANDOM_STATE,
+    n_jobs=-1
+)
+
+modelo_final.fit(X_final, y_final)
+
+pred_test = modelo_final.predict(X_test)
+
+
+# ============================================================
+# 10. MÉTRICAS
+# ============================================================
+
+metricas_train = calcular_metricas(y_train, pred_train)
+metricas_valid = calcular_metricas(y_valid, pred_valid)
+metricas_test = calcular_metricas(y_test, pred_test)
+
+resultados = pd.DataFrame([
+    {
+        "Gas": NOME_GAS,
+        "Conjunto": "Treino",
+        **metricas_train
+    },
+    {
+        "Gas": NOME_GAS,
+        "Conjunto": "Validação",
+        **metricas_valid
+    },
+    {
+        "Gas": NOME_GAS,
+        "Conjunto": "Teste",
+        **metricas_test
+    }
+])
+
+print("\n" + "=" * 75)
+print(f"RESULTADOS — {NOME_GAS}")
+print("=" * 75)
+
+print(
+    resultados.to_string(
+        index=False,
+        float_format=lambda valor: f"{valor:.4f}"
+    )
+)
+
+nome_gas_lower = NOME_GAS.lower()
+
+resultados.to_csv(
+    f"resultados_rf_{nome_gas_lower}_simples.csv",
+    index=False,
+    encoding="utf-8-sig"
+)
+
+
+# ============================================================
+# 11. SALVAR PREVISÕES DO TESTE
+# ============================================================
+
+previsoes_teste = teste[["time", TARGET]].copy()
+
+previsoes_teste[f"{NOME_GAS}_real"] = y_test.to_numpy()
+previsoes_teste[f"{NOME_GAS}_calibrado"] = pred_test
+
+previsoes_teste["erro"] = (
+    previsoes_teste[f"{NOME_GAS}_real"]
+    - previsoes_teste[f"{NOME_GAS}_calibrado"]
+)
+
+previsoes_teste["erro_absoluto"] = previsoes_teste["erro"].abs()
+
+previsoes_teste = (
+    previsoes_teste
+    .sort_values("time")
+    .reset_index(drop=True)
+)
+
+previsoes_teste.to_csv(
+    f"predicoes_rf_{nome_gas_lower}_teste_simples.csv",
+    index=False,
+    encoding="utf-8-sig",
+    date_format="%Y-%m-%d %H:%M:%S",
+    float_format="%.8f"
+)
+
+
+# ============================================================
+# 12. GRÁFICO CONTÍNUO COM TODOS OS DADOS VÁLIDOS
+# ============================================================
+
+base_grafico = base[["time", TARGET] + FEATURES].copy()
+
+base_grafico = (
+    base_grafico
+    .sort_values("time")
+    .reset_index(drop=True)
+)
+
+X_grafico = base_grafico[FEATURES]
+
+base_grafico[f"{NOME_GAS}_real"] = base_grafico[TARGET]
+base_grafico[f"{NOME_GAS}_calibrado"] = modelo_final.predict(X_grafico)
+
+col_real = f"{NOME_GAS}_real"
+col_calibrado = f"{NOME_GAS}_calibrado"
+
+dados_grafico = base_grafico[
+    [
+        "time",
+        col_real,
+        col_calibrado
+    ]
+].copy()
+
+dados_grafico["time"] = pd.to_datetime(
+    dados_grafico["time"],
+    errors="coerce"
+)
+
+dados_grafico = dados_grafico.dropna(
+    subset=["time", col_real, col_calibrado]
+)
+
+dados_grafico = (
+    dados_grafico
+    .sort_values("time")
+    .reset_index(drop=True)
+)
+
+# Criar eixo contínuo por amostra.
+# Isto remove os espaços vazios causados por falhas temporais.
+dados_grafico["amostra"] = np.arange(len(dados_grafico))
+
+print("\n" + "=" * 75)
+print(f"GRÁFICO CONTÍNUO — {NOME_GAS}")
+print("=" * 75)
+
+print("Início real:", dados_grafico["time"].min())
+print("Fim real:", dados_grafico["time"].max())
+print("Total de pontos:", len(dados_grafico))
+
+
+# ============================================================
+# 13. PLOTAR GRÁFICO CONTÍNUO
+# ============================================================
+
+fig, ax = plt.subplots(figsize=(22, 7))
+
+ax.plot(
+    dados_grafico["amostra"],
+    dados_grafico[col_real],
+    linewidth=0.95,
+    label=f"{NOME_GAS} de referência — IAG"
+)
+
+ax.plot(
+    dados_grafico["amostra"],
+    dados_grafico[col_calibrado],
+    linewidth=0.85,
+    alpha=0.85,
+    label=f"{NOME_GAS} calibrado — Random Forest"
+)
+
+ax.set_title(
+    f"Comparação temporal contínua do {NOME_GAS}\n"
+    f"Métricas no teste: "
+    f"R² = {metricas_test['R2']:.3f} | "
+    f"RMSE = {metricas_test['RMSE']:.3f} | "
+    f"MAE = {metricas_test['MAE']:.3f}",
+    fontsize=14,
+    pad=12
+)
+
+ax.set_xlabel(
+    "Período",
+    fontsize=11
+)
+
+ax.set_ylabel(
+    f"Concentração de {NOME_GAS} (ppb)",
+    fontsize=11
 )
 
 # ============================================================
-# 11) SALVAR RESULTADOS DO GRID SEARCH
+# FORMATAR EIXO X COM DATAS REAIS
 # ============================================================
 
-grid_resultados = pd.DataFrame(gs.cv_results_)
+n_ticks = 12
 
-grid_resultados.to_csv(
-    "gridsearch_rf_o3_base_5min.csv",
-    index=False
+posicoes_ticks = np.linspace(
+    0,
+    len(dados_grafico) - 1,
+    n_ticks,
+    dtype=int
 )
 
-# ============================================================
-# 12) REAL VS PREDITO - TESTE
-# ============================================================
-
-plt.figure(figsize=(8, 6))
-
-sns.regplot(
-    x=y_test,
-    y=pred_test,
-    scatter_kws={"alpha": 0.5},
-    line_kws={"color": "red"}
+datas_ticks = (
+    dados_grafico
+    .loc[posicoes_ticks, "time"]
+    .dt.strftime("%d/%m/%Y")
 )
 
-plt.xlabel("O₃ real - estação de referência")
-plt.ylabel("O₃ calibrado - Random Forest")
-plt.title("Random Forest - O₃: Real vs Calibrado")
+ax.set_xticks(posicoes_ticks)
+ax.set_xticklabels(datas_ticks)
 
-plt.grid(True)
+ax.grid(
+    axis="y",
+    linestyle="--",
+    alpha=0.25
+)
+
+ax.legend(
+    loc="upper right",
+    frameon=True
+)
+
+ax.margins(x=0)
+
+plt.xticks(
+    rotation=45,
+    horizontalalignment="right"
+)
+
 plt.tight_layout()
 
+nome_figura_continua = f"rf_{nome_gas_lower}_grafico_continuo_com_picos.png"
+
 plt.savefig(
-    "rf_o3_real_vs_calibrado_base_5min.png",
-    dpi=300
+    nome_figura_continua,
+    dpi=300,
+    bbox_inches="tight"
 )
 
 plt.show()
 
-# ============================================================
-# 13) SÉRIE TEMPORAL DO CONJUNTO DE TESTE
-# ============================================================
+print("Figura salva:", nome_figura_continua)
 
-teste = base.loc[y_test.index, ["time", target]].copy()
-teste["O3_real"] = y_test.values
-teste["O3_calibrado"] = pred_test
-
-teste = teste.sort_values("time")
-
-teste.to_csv(
-    "predicoes_rf_o3_teste_base_5min.csv",
-    index=False
-)
-
-plt.figure(figsize=(14, 5))
-
-plt.plot(
-    teste["time"],
-    teste["O3_real"],
-    label="O₃ real",
-    linewidth=1
-)
-
-plt.plot(
-    teste["time"],
-    teste["O3_calibrado"],
-    label="O₃ calibrado - RF",
-    linewidth=1
-)
-
-plt.xlabel("Tempo")
-plt.ylabel("Concentração de O₃")
-plt.title("Random Forest - O₃: Série temporal do teste")
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-
-plt.savefig(
-    "rf_o3_serie_temporal_teste_base_5min.png",
-    dpi=300
-)
-
-plt.show()
 
 # ============================================================
-# 14) IMPORTÂNCIA DAS VARIÁVEIS
+# 14. SALVAR DADOS DO GRÁFICO
 # ============================================================
 
-rf_final = gs.best_estimator_
-
-importancias = pd.DataFrame({
-    "Variavel": features,
-    "Importancia": rf_final.feature_importances_
-})
-
-importancias = importancias.sort_values(
-    "Importancia",
-    ascending=False
+dados_grafico.to_csv(
+    f"dados_grafico_rf_{nome_gas_lower}_continuo_com_picos.csv",
+    index=False,
+    encoding="utf-8-sig",
+    date_format="%Y-%m-%d %H:%M:%S",
+    float_format="%.8f"
 )
-
-print("\n" + "=" * 60)
-print("IMPORTÂNCIA DAS VARIÁVEIS")
-print("=" * 60)
-print(importancias)
-
-importancias.to_csv(
-    "importancia_variaveis_rf_o3_base_5min.csv",
-    index=False
-)
-
-plt.figure(figsize=(8, 5))
-
-sns.barplot(
-    data=importancias,
-    x="Importancia",
-    y="Variavel"
-)
-
-plt.title("Importância das Variáveis - Random Forest O₃")
-plt.xlabel("Importância")
-plt.ylabel("Variável")
-
-plt.tight_layout()
-
-plt.savefig(
-    "importancia_variaveis_rf_o3_base_5min.png",
-    dpi=300
-)
-
-plt.show()
-
-# ============================================================
-# 15) RESUMO FINAL
-# ============================================================
-
-print("\nArquivos gerados:")
-print("resultados_rf_o3_base_5min.csv")
-print("gridsearch_rf_o3_base_5min.csv")
-print("predicoes_rf_o3_teste_base_5min.csv")
-print("importancia_variaveis_rf_o3_base_5min.csv")
-print("rf_o3_real_vs_calibrado_base_5min.png")
 print("rf_o3_serie_temporal_teste_base_5min.png")
 print("importancia_variaveis_rf_o3_base_5min.png")
