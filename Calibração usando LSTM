@@ -1,360 +1,1040 @@
 # ============================================================
-# LSTM - CALIBRAÇÃO CO COM JANELA TEMPORAL 24
-# SPLIT ALEATÓRIO 60/20/20
-# BASE: base_5min_preprocessada_final.csv
+# LSTM — CALIBRAÇÃO DE UM GÁS POR VEZ SEM KFOLD
+#
+# Usa colunas merge_sem_alterar:
+# CO  -> co_merge_sem_alterar
+# NO2 -> no2_merge_sem_alterar
+# O3  -> o3_merge_sem_alterar
+# SO2 -> so2_merge_sem_alterar
+#
+# Split aleatório:
+# 60% treino
+# 20% validação
+# 20% teste
+#
+# Janela temporal:
+# JANELA = 24
+# Se a base estiver em 5 min, 24 amostras = 2 horas
 # ============================================================
 
-import pandas as pd
+import warnings
+warnings.filterwarnings("ignore")
+
+from pathlib import Path
+
+import joblib
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 
+from scipy.stats import pearsonr
+
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 
+import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
-from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.layers import Input, LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras import backend as K
+
 
 # ============================================================
-# CONFIGURAÇÕES
+# 1. CONFIGURAÇÕES
 # ============================================================
 
-arquivo = "base_5min_preprocessada_final.csv"
+ARQUIVO = Path("/content/base_merge_todos_gases_US.csv")
 
-gas = "CO"
-target = "iag_co"
+# Escolha um gás por vez:
+# opções: "co", "no2", "o3", "so2"
+GAS_ESCOLHIDO = "co"
 
-features = [
-    "e2sp_co",
-    "e2sp_co_we",
-    "e2sp_co_ae",
-    "pin_temp",
-    "pin_umid"
-]
+RANDOM_STATE = 42
 
-janela = 24  # 24 registros de 5 min = 2 horas
+JANELA = 24
 
-# ============================================================
-# LEITURA E ORGANIZAÇÃO DA BASE
-# ============================================================
+EPOCHS = 80
+BATCH_SIZE = 32
+LEARNING_RATE = 0.0005
 
-df = pd.read_csv(arquivo, low_memory=False)
-
-df.columns = df.columns.str.strip()
-
-if "time" not in df.columns:
-    raise ValueError("A coluna 'time' não foi encontrada na base.")
-
-df["time"] = pd.to_datetime(df["time"], errors="coerce")
-df = df.dropna(subset=["time"])
-df = df.sort_values("time").reset_index(drop=True)
-
-colunas_necessarias = features + [target]
-
-faltando = [c for c in colunas_necessarias if c not in df.columns]
-
-if faltando:
-    raise ValueError(f"As seguintes colunas não existem na base: {faltando}")
-
-base = df[["time"] + features + [target]].copy()
-
-for col in features + [target]:
-    base[col] = pd.to_numeric(base[col], errors="coerce")
-
-base = base.replace([np.inf, -np.inf], np.nan)
-base = base.dropna(subset=features + [target])
-base = base.sort_values("time").reset_index(drop=True)
-
-print("=" * 60)
-print("BASE FINAL")
-print("=" * 60)
-print("Arquivo:", arquivo)
-print("Shape:", base.shape)
-print("Período:", base["time"].min(), "até", base["time"].max())
-print("Features:", features)
-print("Target:", target)
 
 # ============================================================
-# NORMALIZAÇÃO
+# 2. REPRODUTIBILIDADE
 # ============================================================
 
-scaler_X = MinMaxScaler()
-scaler_y = MinMaxScaler()
+np.random.seed(RANDOM_STATE)
+tf.random.set_seed(RANDOM_STATE)
 
-X_scaled = scaler_X.fit_transform(base[features])
-y_scaled = scaler_y.fit_transform(base[[target]])
 
 # ============================================================
-# CRIAÇÃO DAS JANELAS TEMPORAIS
+# 3. CONFIGURAÇÃO DOS GASES
 # ============================================================
 
-def criar_janelas(X, y, tempos, janela):
-    X_seq = []
-    y_seq = []
-    tempos_seq = []
+CONFIG_GASES = {
+    "co": {
+        "nome": "CO",
+        "target_opcoes": ["iag_co_ppb", "iag_co"],
+        "features": [
+            "co_merge_sem_alterar",
+            "e2sp_co_we",
+            "e2sp_co_ae",
+            "ctesb_temp",
+            "pin_umid"
+        ]
+    },
 
-    for i in range(janela, len(X)):
-        X_seq.append(X[i - janela:i])
-        y_seq.append(y[i])
-        tempos_seq.append(tempos.iloc[i])
+    "no2": {
+        "nome": "NO2",
+        "target_opcoes": ["iag_no2"],
+        "features": [
+            "no2_merge_sem_alterar",
+            "e2sp_no2_we",
+            "e2sp_no2_ae",
+            "e2sp_ox_we",
+            "ctesb_temp",
+            "pin_umid"
+        ]
+    },
 
-    return np.array(X_seq), np.array(y_seq), np.array(tempos_seq)
+    "o3": {
+        "nome": "O3",
+        "target_opcoes": ["iag_o3"],
+        "features": [
+            "o3_merge_sem_alterar",
+            "e2sp_ox_we",
+            "e2sp_ox_ae",
+            "ctesb_temp",
+            "pin_umid"
+        ]
+    },
 
-X_lstm, y_lstm, tempos_lstm = criar_janelas(
-    X_scaled,
-    y_scaled,
-    base["time"],
-    janela
-)
+    "so2": {
+        "nome": "SO2",
+        "target_opcoes": ["iag_so2"],
+        "features": [
+            "so2_merge_sem_alterar",
+            "e2sp_so2_we",
+            "e2sp_so2_ae",
+            "ctesb_temp",
+            "pin_umid"
+        ]
+    }
+}
 
-print("\nShape X LSTM:", X_lstm.shape)
-print("Shape y LSTM:", y_lstm.shape)
-
-# ============================================================
-# SPLIT ALEATÓRIO 60/20/20
-# ============================================================
-
-X_train, X_temp, y_train, y_temp, tempo_train, tempo_temp = train_test_split(
-    X_lstm,
-    y_lstm,
-    tempos_lstm,
-    train_size=0.60,
-    random_state=42,
-    shuffle=True
-)
-
-X_valid, X_test, y_valid, y_test, tempo_valid, tempo_test = train_test_split(
-    X_temp,
-    y_temp,
-    tempo_temp,
-    test_size=0.50,
-    random_state=42,
-    shuffle=True
-)
-
-print("\nDivisão dos dados:")
-print("Treino:", X_train.shape)
-print("Validação:", X_valid.shape)
-print("Teste:", X_test.shape)
-
-# ============================================================
-# MODELO LSTM
-# ============================================================
-
-modelo = Sequential([
-    Input(shape=(X_train.shape[1], X_train.shape[2])),
-    LSTM(64),
-    Dropout(0.3),
-    Dense(32, activation="relu"),
-    Dense(1)
-])
-
-modelo.compile(
-    optimizer=Adam(learning_rate=0.0005),
-    loss="mse"
-)
-
-modelo.summary()
 
 # ============================================================
-# TREINAMENTO
+# 4. LOCALIZAR ARQUIVO
 # ============================================================
 
-early_stop = EarlyStopping(
-    monitor="val_loss",
-    patience=20,
-    restore_best_weights=True
-)
+if not ARQUIVO.exists():
 
-historico = modelo.fit(
-    X_train,
-    y_train,
-    validation_data=(X_valid, y_valid),
-    epochs=250,
-    batch_size=32,
-    callbacks=[early_stop],
-    verbose=1
-)
+    alternativas = [
+        Path("base_merge_todos_gases_US.csv"),
+        Path("/content/base_merge_todos_gases_sem_alterar.csv"),
+        Path("base_merge_todos_gases_sem_alterar.csv")
+    ]
 
-# ============================================================
-# PREVISÕES
-# ============================================================
+    encontrado = False
 
-pred_train = modelo.predict(X_train)
-pred_valid = modelo.predict(X_valid)
-pred_test = modelo.predict(X_test)
+    for arquivo_alt in alternativas:
+        if arquivo_alt.exists():
+            ARQUIVO = arquivo_alt
+            encontrado = True
+            break
 
-y_train_real = scaler_y.inverse_transform(y_train)
-y_valid_real = scaler_y.inverse_transform(y_valid)
-y_test_real = scaler_y.inverse_transform(y_test)
+    if not encontrado:
+        raise FileNotFoundError(
+            "O arquivo não foi encontrado.\n\n"
+            "Envie para o Colab um destes arquivos:\n"
+            "- base_merge_todos_gases_US.csv\n"
+            "- base_merge_todos_gases_sem_alterar.csv"
+        )
 
-pred_train_real = scaler_y.inverse_transform(pred_train)
-pred_valid_real = scaler_y.inverse_transform(pred_valid)
-pred_test_real = scaler_y.inverse_transform(pred_test)
 
 # ============================================================
-# MÉTRICAS
+# 5. FUNÇÕES AUXILIARES
 # ============================================================
+
+def ler_base_csv(arquivo):
+    """
+    Lê CSV separado por vírgula ou ponto e vírgula.
+    """
+
+    try:
+        df_temp = pd.read_csv(
+            arquivo,
+            sep=",",
+            decimal=".",
+            encoding="utf-8-sig",
+            low_memory=False
+        )
+
+        if df_temp.shape[1] > 1:
+            print("Separador identificado: vírgula ','")
+            return df_temp
+
+    except Exception:
+        pass
+
+    try:
+        df_temp = pd.read_csv(
+            arquivo,
+            sep=";",
+            decimal=".",
+            encoding="utf-8-sig",
+            low_memory=False
+        )
+
+        if df_temp.shape[1] > 1:
+            print("Separador identificado: ponto e vírgula ';'")
+            return df_temp
+
+    except Exception:
+        pass
+
+    df_temp = pd.read_csv(
+        arquivo,
+        sep=None,
+        engine="python",
+        decimal=".",
+        encoding="utf-8-sig"
+    )
+
+    print("Separador identificado automaticamente.")
+    return df_temp
+
+
+def converter_numero(valor):
+    """
+    Converte texto para número.
+    Não altera escala, não multiplica e não divide.
+    """
+
+    if pd.isna(valor):
+        return np.nan
+
+    s = str(valor).strip()
+
+    if s == "" or s.lower() in ["nan", "none", "null"]:
+        return np.nan
+
+    s = s.replace(" ", "")
+
+    # Formato brasileiro: 1.234,56
+    if "," in s and "." in s:
+
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "")
+            s = s.replace(",", ".")
+
+        # Formato americano: 1,234.56
+        else:
+            s = s.replace(",", "")
+
+    # Apenas vírgula decimal
+    elif "," in s:
+        s = s.replace(",", ".")
+
+    # Caso com vários pontos
+    if s.count(".") > 1:
+        partes = s.split(".")
+        s = partes[0] + "." + "".join(partes[1:])
+
+    return pd.to_numeric(s, errors="coerce")
+
+
+def escolher_target(df, opcoes):
+    """
+    Escolhe automaticamente a coluna de referência existente.
+    """
+
+    for col in opcoes:
+        if col in df.columns:
+            return col
+
+    raise KeyError(
+        "Nenhuma coluna de referência foi encontrada.\n"
+        f"Opções esperadas: {opcoes}\n\n"
+        f"Colunas disponíveis:\n{df.columns.tolist()}"
+    )
+
 
 def calcular_metricas(y_real, y_pred):
-    rmse = np.sqrt(mean_squared_error(y_real, y_pred))
+    """
+    Calcula RMSE, MAE, R2 e Pearson.
+    """
+
+    y_real = np.asarray(y_real, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+
     mse = mean_squared_error(y_real, y_pred)
+    rmse = np.sqrt(mse)
+
     mae = mean_absolute_error(y_real, y_pred)
     r2 = r2_score(y_real, y_pred)
 
-    if np.std(y_real) == 0 or np.std(y_pred) == 0:
-        pearson = np.nan
+    if len(y_real) > 1 and np.std(y_real) > 0 and np.std(y_pred) > 0:
+        pearson = pearsonr(y_real, y_pred)[0]
     else:
-        pearson = np.corrcoef(
-            y_real.flatten(),
-            y_pred.flatten()
-        )[0, 1]
+        pearson = np.nan
 
-    return rmse, mse, mae, r2, pearson
+    return {
+        "N": len(y_real),
+        "RMSE": rmse,
+        "MAE": mae,
+        "R2": r2,
+        "Pearson": pearson
+    }
 
-resultados = []
 
-for fase, y_real, y_pred in [
-    ("Treino", y_train_real, pred_train_real),
-    ("Validação", y_valid_real, pred_valid_real),
-    ("Teste", y_test_real, pred_test_real)
-]:
-    rmse, mse, mae, r2, pearson = calcular_metricas(y_real, y_pred)
-    resultados.append([gas, fase, rmse, mse, mae, r2, pearson, len(y_real)])
+def criar_sequencias(X, y, tempos, janela):
+    """
+    Cria sequências para a LSTM.
+    Cada saída y usa as 'janela' amostras anteriores de X.
+    """
 
-resultado_final = pd.DataFrame(
-    resultados,
-    columns=["Gas", "Fase", "RMSE", "MSE", "MAE", "R2", "Pearson", "N"]
+    X_seq = []
+    y_seq = []
+    t_seq = []
+
+    for i in range(janela, len(X)):
+
+        X_seq.append(X[i - janela:i])
+        y_seq.append(y[i])
+        t_seq.append(tempos[i])
+
+    return (
+        np.array(X_seq),
+        np.array(y_seq),
+        np.array(t_seq)
+    )
+
+
+def transformar_X(scaler, X):
+    """
+    Aplica normalização em dados 3D da LSTM.
+    """
+
+    n_amostras = X.shape[0]
+    n_janela = X.shape[1]
+    n_features = X.shape[2]
+
+    X_2d = X.reshape(-1, n_features)
+
+    X_2d_scaled = scaler.transform(X_2d)
+
+    X_scaled = X_2d_scaled.reshape(
+        n_amostras,
+        n_janela,
+        n_features
+    )
+
+    return X_scaled
+
+
+def criar_modelo_lstm(janela, n_features):
+    """
+    Modelo LSTM simples.
+    """
+
+    modelo = Sequential([
+        Input(shape=(janela, n_features)),
+
+        LSTM(
+            64,
+            return_sequences=False
+        ),
+
+        Dropout(0.20),
+
+        Dense(
+            32,
+            activation="relu"
+        ),
+
+        Dense(1)
+    ])
+
+    modelo.compile(
+        optimizer=Adam(learning_rate=LEARNING_RATE),
+        loss="mse"
+    )
+
+    return modelo
+
+
+def criar_callbacks():
+    """
+    Callbacks para evitar treino excessivo.
+    """
+
+    callbacks = [
+        EarlyStopping(
+            monitor="val_loss",
+            patience=10,
+            restore_best_weights=True
+        ),
+
+        ReduceLROnPlateau(
+            monitor="val_loss",
+            factor=0.5,
+            patience=4,
+            min_lr=1e-5
+        )
+    ]
+
+    return callbacks
+
+
+# ============================================================
+# 6. CARREGAR BASE
+# ============================================================
+
+print("=" * 75)
+print("LSTM — CALIBRAÇÃO DE UM GÁS POR VEZ SEM KFOLD")
+print("=" * 75)
+
+print("\nArquivo utilizado:")
+print(ARQUIVO.resolve())
+
+df = ler_base_csv(ARQUIVO)
+
+df.columns = (
+    df.columns
+    .astype(str)
+    .str.replace("\ufeff", "", regex=False)
+    .str.strip()
+    .str.lower()
 )
 
-print("\n==============================")
-print("RESULTADOS")
-print("==============================")
-print(resultado_final)
+if "time" not in df.columns:
+    raise KeyError(
+        "A coluna 'time' não foi encontrada.\n\n"
+        f"Colunas disponíveis:\n{df.columns.tolist()}"
+    )
 
-resultado_final.to_csv("resultados_lstm_co_janela24.csv", index=False)
-
-# ============================================================
-# GRÁFICO 1 - CURVA DE TREINAMENTO
-# ============================================================
-
-plt.figure(figsize=(8, 5))
-plt.plot(historico.history["loss"], label="Treino")
-plt.plot(historico.history["val_loss"], label="Validação")
-plt.xlabel("Épocas")
-plt.ylabel("Erro MSE")
-plt.title("Curva de Treinamento - LSTM CO com Janela 24")
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("lstm_co_janela24_curva_treinamento.png", dpi=300)
-plt.show()
-
-# ============================================================
-# GRÁFICO 2 - REAL VS PREDITO
-# ============================================================
-
-plt.figure(figsize=(8, 6))
-plt.scatter(y_test_real, pred_test_real, alpha=0.5)
-
-min_val = min(y_test_real.min(), pred_test_real.min())
-max_val = max(y_test_real.max(), pred_test_real.max())
-
-plt.plot([min_val, max_val], [min_val, max_val], linestyle="--")
-
-plt.xlabel("CO Real")
-plt.ylabel("CO Predito")
-plt.title("LSTM - CO Real vs Predito")
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("lstm_co_janela24_real_vs_predito.png", dpi=300)
-plt.show()
-
-# ============================================================
-# GRÁFICO 3 - SÉRIE TEMPORAL DO TESTE
-# ============================================================
-
-ordem = np.argsort(tempo_test)
-
-tempo_test_ord = tempo_test[ordem]
-y_test_ord = y_test_real.flatten()[ordem]
-pred_test_ord = pred_test_real.flatten()[ordem]
-
-plt.figure(figsize=(14, 6))
-plt.plot(
-    tempo_test_ord,
-    y_test_ord,
-    label="CO Real - Estação de referência",
-    linewidth=2
+df["time"] = pd.to_datetime(
+    df["time"],
+    errors="coerce"
 )
 
-plt.plot(
-    tempo_test_ord,
-    pred_test_ord,
-    label="CO Predito - LSTM",
-    alpha=0.8
+datas_invalidas = int(df["time"].isna().sum())
+
+df = df.dropna(subset=["time"])
+
+duplicados = int(df["time"].duplicated().sum())
+
+df = (
+    df
+    .sort_values("time")
+    .drop_duplicates(subset=["time"], keep="first")
+    .reset_index(drop=True)
 )
 
-plt.xlabel("Tempo")
-plt.ylabel("Concentração de CO")
-plt.title("LSTM CO - Série Temporal no Conjunto de Teste")
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("lstm_co_janela24_serie_teste.png", dpi=300)
-plt.show()
+print("\nDatas inválidas:", datas_invalidas)
+print("Horários duplicados:", duplicados)
+print("Dimensão da base:", df.shape)
+print("Período da base:", df["time"].min(), "até", df["time"].max())
+
 
 # ============================================================
-# GRÁFICO 4 - REFERÊNCIA VS SENSOR DE BAIXO CUSTO
+# 7. PREPARAR BASE DO GÁS ESCOLHIDO
 # ============================================================
 
-sensor_baixo_custo = "e2sp_co"
+if GAS_ESCOLHIDO not in CONFIG_GASES:
+    raise ValueError(
+        f"Gás inválido: {GAS_ESCOLHIDO}. "
+        f"Use uma destas opções: {list(CONFIG_GASES.keys())}"
+    )
 
-comparacao = base[["time", target, sensor_baixo_custo]].copy()
-comparacao = comparacao.sort_values("time")
+config = CONFIG_GASES[GAS_ESCOLHIDO]
 
-plt.figure(figsize=(14, 6))
-plt.plot(
-    comparacao["time"],
-    comparacao[target],
-    label="Estação de referência - CO",
-    linewidth=2
+NOME_GAS = config["nome"]
+FEATURES = config["features"]
+TARGET = escolher_target(df, config["target_opcoes"])
+
+colunas_necessarias = ["time"] + FEATURES + [TARGET]
+
+colunas_faltando = [
+    col for col in colunas_necessarias
+    if col not in df.columns
+]
+
+if colunas_faltando:
+    raise KeyError(
+        f"Colunas faltando para {NOME_GAS}:\n"
+        f"{colunas_faltando}\n\n"
+        f"Colunas disponíveis:\n{df.columns.tolist()}"
+    )
+
+base = df[colunas_necessarias].copy()
+
+# Converter entradas e alvo para número
+for coluna in FEATURES + [TARGET]:
+    base[coluna] = base[coluna].apply(converter_numero)
+
+# Remover infinitos
+base = base.replace([np.inf, -np.inf], np.nan)
+
+# Remover valores negativos no alvo de referência
+negativos_target = int((base[TARGET] < 0).sum())
+
+base.loc[
+    base[TARGET] < 0,
+    TARGET
+] = np.nan
+
+# Remover valores <= 0 na coluna mergeada principal
+coluna_merge = FEATURES[0]
+
+invalidos_merge = int((base[coluna_merge] <= 0).sum())
+
+base.loc[
+    base[coluna_merge] <= 0,
+    coluna_merge
+] = np.nan
+
+linhas_antes = len(base)
+
+base = (
+    base
+    .dropna(subset=FEATURES + [TARGET])
+    .sort_values("time")
+    .reset_index(drop=True)
 )
 
-plt.plot(
-    comparacao["time"],
-    comparacao[sensor_baixo_custo],
-    label="Sensor de baixo custo - CO",
-    alpha=0.8
+linhas_depois = len(base)
+
+print("\n" + "=" * 75)
+print(f"BASE UTILIZADA — {NOME_GAS}")
+print("=" * 75)
+
+print("Target usado:", TARGET)
+print("Coluna mergeada usada:", coluna_merge)
+
+print("\nValores negativos no alvo removidos:", negativos_target)
+print("Valores <= 0 na coluna mergeada removidos:", invalidos_merge)
+
+print("\nLinhas antes:", linhas_antes)
+print("Linhas utilizadas:", linhas_depois)
+print("Linhas removidas:", linhas_antes - linhas_depois)
+
+print(
+    "Período válido usado:",
+    base["time"].min(),
+    "até",
+    base["time"].max()
 )
 
-plt.xlabel("Tempo")
-plt.ylabel("Concentração de CO")
-plt.title("Comparação da Concentração de CO: Referência vs Sensor de Baixo Custo")
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("comparacao_co_referencia_vs_baixo_custo.png", dpi=300)
-plt.show()
+print("\nVariáveis de entrada:")
+for feature in FEATURES:
+    print("-", feature)
+
+print("\nVariável de saída:")
+print("-", TARGET)
+
+if len(base) <= JANELA + 100:
+    raise ValueError(
+        f"A base possui poucas linhas válidas para LSTM em {NOME_GAS}."
+    )
+
 
 # ============================================================
-# SALVAR PREVISÕES DO TESTE
+# 8. CRIAR SEQUÊNCIAS PARA LSTM
+# ============================================================
+
+X_bruto = base[FEATURES].to_numpy(dtype=float)
+y_bruto = base[TARGET].to_numpy(dtype=float)
+tempos = base["time"].to_numpy()
+
+X_seq, y_seq, t_seq = criar_sequencias(
+    X=X_bruto,
+    y=y_bruto,
+    tempos=tempos,
+    janela=JANELA
+)
+
+print("\n" + "=" * 75)
+print(f"SEQUÊNCIAS LSTM — {NOME_GAS}")
+print("=" * 75)
+
+print("Janela:", JANELA)
+print("Formato X:", X_seq.shape)
+print("Formato y:", y_seq.shape)
+
+
+# ============================================================
+# 9. SPLIT ALEATÓRIO 60/20/20
+# ============================================================
+
+X_train, X_temp, y_train, y_temp, t_train, t_temp = train_test_split(
+    X_seq,
+    y_seq,
+    t_seq,
+    test_size=0.40,
+    random_state=RANDOM_STATE,
+    shuffle=True
+)
+
+X_valid, X_test, y_valid, y_test, t_valid, t_test = train_test_split(
+    X_temp,
+    y_temp,
+    t_temp,
+    test_size=0.50,
+    random_state=RANDOM_STATE,
+    shuffle=True
+)
+
+print("\n" + "=" * 75)
+print(f"DIVISÃO ALEATÓRIA 60/20/20 — {NOME_GAS}")
+print("=" * 75)
+
+print("Treino:", len(X_train), f"({len(X_train) / len(X_seq) * 100:.2f}%)")
+print("Validação:", len(X_valid), f"({len(X_valid) / len(X_seq) * 100:.2f}%)")
+print("Teste:", len(X_test), f"({len(X_test) / len(X_seq) * 100:.2f}%)")
+
+print(
+    "\nO split foi aleatório, com shuffle=True e random_state =",
+    RANDOM_STATE
+)
+
+
+# ============================================================
+# 10. NORMALIZAÇÃO
+# ============================================================
+
+n_features = X_train.shape[2]
+
+scaler_X = StandardScaler()
+scaler_y = StandardScaler()
+
+# Ajustar scaler apenas com dados de treino
+scaler_X.fit(
+    X_train.reshape(-1, n_features)
+)
+
+scaler_y.fit(
+    y_train.reshape(-1, 1)
+)
+
+X_train_s = transformar_X(
+    scaler_X,
+    X_train
+)
+
+X_valid_s = transformar_X(
+    scaler_X,
+    X_valid
+)
+
+X_test_s = transformar_X(
+    scaler_X,
+    X_test
+)
+
+y_train_s = scaler_y.transform(
+    y_train.reshape(-1, 1)
+)
+
+y_valid_s = scaler_y.transform(
+    y_valid.reshape(-1, 1)
+)
+
+
+# ============================================================
+# 11. TREINAR LSTM
+# ============================================================
+
+K.clear_session()
+
+modelo = criar_modelo_lstm(
+    janela=JANELA,
+    n_features=n_features
+)
+
+print("\n" + "=" * 75)
+print(f"TREINAMENTO DA LSTM — {NOME_GAS}")
+print("=" * 75)
+
+historico = modelo.fit(
+    X_train_s,
+    y_train_s,
+    validation_data=(X_valid_s, y_valid_s),
+    epochs=EPOCHS,
+    batch_size=BATCH_SIZE,
+    callbacks=criar_callbacks(),
+    verbose=1,
+    shuffle=True
+)
+
+
+# ============================================================
+# 12. PREVISÕES
+# ============================================================
+
+pred_train_s = modelo.predict(
+    X_train_s,
+    verbose=0
+)
+
+pred_valid_s = modelo.predict(
+    X_valid_s,
+    verbose=0
+)
+
+pred_test_s = modelo.predict(
+    X_test_s,
+    verbose=0
+)
+
+pred_train = scaler_y.inverse_transform(
+    pred_train_s
+).ravel()
+
+pred_valid = scaler_y.inverse_transform(
+    pred_valid_s
+).ravel()
+
+pred_test = scaler_y.inverse_transform(
+    pred_test_s
+).ravel()
+
+
+# ============================================================
+# 13. MÉTRICAS
+# ============================================================
+
+metricas_train = calcular_metricas(
+    y_train,
+    pred_train
+)
+
+metricas_valid = calcular_metricas(
+    y_valid,
+    pred_valid
+)
+
+metricas_test = calcular_metricas(
+    y_test,
+    pred_test
+)
+
+resultados = pd.DataFrame([
+    {
+        "Gas": NOME_GAS,
+        "Conjunto": "Treino",
+        **metricas_train
+    },
+    {
+        "Gas": NOME_GAS,
+        "Conjunto": "Validação",
+        **metricas_valid
+    },
+    {
+        "Gas": NOME_GAS,
+        "Conjunto": "Teste",
+        **metricas_test
+    }
+])
+
+print("\n" + "=" * 75)
+print(f"RESULTADOS — LSTM — {NOME_GAS}")
+print("=" * 75)
+
+print(
+    resultados.to_string(
+        index=False,
+        float_format=lambda valor: f"{valor:.4f}"
+    )
+)
+
+nome_gas_lower = NOME_GAS.lower()
+
+resultados.to_csv(
+    f"resultados_lstm_{nome_gas_lower}_sem_kfold.csv",
+    index=False,
+    encoding="utf-8-sig"
+)
+
+
+# ============================================================
+# 14. SALVAR PREVISÕES DO TESTE
 # ============================================================
 
 previsoes_teste = pd.DataFrame({
-    "time": tempo_test_ord,
-    "CO_real": y_test_ord,
-    "CO_predito": pred_test_ord
+    "time": t_test,
+    f"{NOME_GAS}_real": y_test,
+    f"{NOME_GAS}_calibrado": pred_test
 })
 
-previsoes_teste.to_csv("previsoes_lstm_co_janela24.csv", index=False)
+previsoes_teste["erro"] = (
+    previsoes_teste[f"{NOME_GAS}_real"]
+    - previsoes_teste[f"{NOME_GAS}_calibrado"]
+)
+
+previsoes_teste["erro_absoluto"] = (
+    previsoes_teste["erro"].abs()
+)
+
+previsoes_teste = (
+    previsoes_teste
+    .sort_values("time")
+    .reset_index(drop=True)
+)
+
+previsoes_teste.to_csv(
+    f"predicoes_lstm_{nome_gas_lower}_teste_sem_kfold.csv",
+    index=False,
+    encoding="utf-8-sig",
+    date_format="%Y-%m-%d %H:%M:%S",
+    float_format="%.8f"
+)
+
+
+# ============================================================
+# 15. GRÁFICO CONTÍNUO COM TODOS OS DADOS VÁLIDOS
+# ============================================================
+
+X_seq_s = transformar_X(
+    scaler_X,
+    X_seq
+)
+
+pred_all_s = modelo.predict(
+    X_seq_s,
+    verbose=0
+)
+
+pred_all = scaler_y.inverse_transform(
+    pred_all_s
+).ravel()
+
+col_real = f"{NOME_GAS}_real"
+col_calibrado = f"{NOME_GAS}_calibrado"
+
+dados_grafico = pd.DataFrame({
+    "time": t_seq,
+    col_real: y_seq,
+    col_calibrado: pred_all
+})
+
+dados_grafico["time"] = pd.to_datetime(
+    dados_grafico["time"],
+    errors="coerce"
+)
+
+dados_grafico = dados_grafico.dropna(
+    subset=["time", col_real, col_calibrado]
+)
+
+dados_grafico = (
+    dados_grafico
+    .sort_values("time")
+    .reset_index(drop=True)
+)
+
+# Eixo contínuo por amostra.
+# Isso evita buracos visuais quando há falhas temporais na base.
+dados_grafico["amostra"] = np.arange(len(dados_grafico))
+
+print("\n" + "=" * 75)
+print(f"GRÁFICO CONTÍNUO — LSTM — {NOME_GAS}")
+print("=" * 75)
+
+print("Início real:", dados_grafico["time"].min())
+print("Fim real:", dados_grafico["time"].max())
+print("Total de pontos:", len(dados_grafico))
+
+
+# ============================================================
+# 16. PLOTAR GRÁFICO CONTÍNUO
+# ============================================================
+
+fig, ax = plt.subplots(figsize=(22, 7))
+
+ax.plot(
+    dados_grafico["amostra"],
+    dados_grafico[col_real],
+    linewidth=0.95,
+    label=f"{NOME_GAS} de referência — IAG"
+)
+
+ax.plot(
+    dados_grafico["amostra"],
+    dados_grafico[col_calibrado],
+    linewidth=0.85,
+    alpha=0.85,
+    label=f"{NOME_GAS} calibrado — LSTM"
+)
+
+ax.set_title(
+    f"Comparação temporal contínua do {NOME_GAS} — LSTM \n"
+    f"Teste: "
+    f"R² = {metricas_test['R2']:.3f} | "
+    f"RMSE = {metricas_test['RMSE']:.3f} | "
+    f"MAE = {metricas_test['MAE']:.3f}",
+    fontsize=14,
+    pad=12
+)
+
+ax.set_xlabel(
+    "Período",
+    fontsize=11
+)
+
+ax.set_ylabel(
+    f"Concentração de {NOME_GAS} (ppb)",
+    fontsize=11
+)
+
+n_ticks = min(12, len(dados_grafico))
+
+posicoes_ticks = np.linspace(
+    0,
+    len(dados_grafico) - 1,
+    n_ticks,
+    dtype=int
+)
+
+datas_ticks = (
+    dados_grafico
+    .loc[posicoes_ticks, "time"]
+    .dt.strftime("%d/%m/%Y")
+)
+
+ax.set_xticks(posicoes_ticks)
+ax.set_xticklabels(datas_ticks)
+
+ax.grid(
+    axis="y",
+    linestyle="--",
+    alpha=0.25
+)
+
+ax.legend(
+    loc="upper right",
+    frameon=True
+)
+
+ax.margins(x=0)
+
+plt.xticks(
+    rotation=45,
+    horizontalalignment="right"
+)
+
+plt.tight_layout()
+
+nome_figura_continua = f"lstm_{nome_gas_lower}_grafico_continuo.png"
+
+plt.savefig(
+    nome_figura_continua,
+    dpi=300,
+    bbox_inches="tight"
+)
+
+plt.show()
+
+print("Figura salva:", nome_figura_continua)
+
+
+# ============================================================
+# 17. GRÁFICO DA PERDA
+# ============================================================
+
+fig, ax = plt.subplots(figsize=(12, 5))
+
+ax.plot(
+    historico.history["loss"],
+    linewidth=1.2,
+    label="Treino"
+)
+
+ax.plot(
+    historico.history["val_loss"],
+    linewidth=1.2,
+    label="Validação"
+)
+
+ax.set_title(
+    f"Evolução da perda da LSTM — {NOME_GAS}",
+    fontsize=13
+)
+
+ax.set_xlabel("Época")
+ax.set_ylabel("Loss")
+
+ax.grid(
+    axis="y",
+    linestyle="--",
+    alpha=0.25
+)
+
+ax.legend()
+
+plt.tight_layout()
+
+nome_figura_loss = f"lstm_{nome_gas_lower}.png"
+
+plt.savefig(
+    nome_figura_loss,
+    dpi=300,
+    bbox_inches="tight"
+)
+
+plt.show()
+
+print("Figura salva:", nome_figura_loss)
+
+
+# ============================================================
+# 18. SALVAR DADOS DO GRÁFICO
+# ============================================================
+
+dados_grafico.to_csv(
+    f"dados_grafico_lstm_{nome_gas_lower}_continuo.csv",
+    index=False,
+    encoding="utf-8-sig",
+    date_format="%Y-%m-%d %H:%M:%S",
+    float_format="%.8f"
+)
+
+
+# ============================================================
+# 19. SALVAR MODELO E SCALERS
+# ============================================================
+
+modelo.save(
+    f"modelo_lstm_{nome_gas_lower}_sem_kfold.keras"
+)
+
+joblib.dump(
+    scaler_X,
+    f"scaler_X_lstm_{nome_gas_lower}_sem_kfold.joblib"
+)
+
+joblib.dump(
+    scaler_y,
+    f"scaler_y_lstm_{nome_gas_lower}_sem_kfold.joblib"
+)
+
+
+# ============================================================
+# 20. FINALIZAÇÃO
+# ============================================================
+
+print("\n" + "=" * 75)
+print(f"CALIBRAÇÃO LSTM DO {NOME_GAS} CONCLUÍDA")
+print("=" * 75)
 
 print("\nArquivos gerados:")
-print("resultados_lstm_co_janela24.csv")
-print("previsoes_lstm_co_janela24.csv")
-print("lstm_co_janela24_curva_treinamento.png")
-print("lstm_co_janela24_real_vs_predito.png")
-print("lstm_co_janela24_serie_teste.png")
-print("comparacao_co_referencia_vs_baixo_custo.png")
+print(f"- resultados_lstm_{nome_gas_lower}.csv")
+print(f"- predicoes_lstm_{nome_gas_lower}_teste_sem_kfold.csv")
+print(f"- dados_grafico_lstm_{nome_gas_lower}_continuo.csv")
+print(f"- lstm_{nome_gas_lower}_grafico_continuo.png")
+print(f"- lstm_{nome_gas_lower}_loss.png")
+print(f"- modelo_lstm_{nome_gas_lower}.keras")
+print(f"- scaler_X_lstm_{nome_gas_lower}.joblib")
+print(f"- scaler_y_lstm_{nome_gas_lower}.joblib")
